@@ -25,7 +25,7 @@
 
 namespace py = pybind11;
 
-using c_type = complex;
+using c_type = std::complex<float>;
 using ArrayType = std::vector<c_type, aligned_allocator<c_type,64>>;
 using MatrixType = std::vector<ArrayType>;
 
@@ -45,6 +45,8 @@ PYBIND11_PLUGIN(_qracksim) {
         .def("apply_controlled_swap", &QrackSimulator::apply_controlled_swap)
         .def("apply_controlled_sqrtswap", &QrackSimulator::apply_controlled_sqrtswap)
         .def("apply_controlled_phase_gate", &QrackSimulator::apply_controlled_phase_gate)
+        .def("apply_uniformly_controlled_ry", &QrackSimulator::apply_uniformly_controlled_ry)
+        .def("apply_uniformly_controlled_rz", &QrackSimulator::apply_uniformly_controlled_rz)
         .def("apply_controlled_inc", &QrackSimulator::apply_controlled_inc)
         .def("apply_controlled_dec", &QrackSimulator::apply_controlled_dec)
         .def("apply_controlled_mul", &QrackSimulator::apply_controlled_mul)
@@ -53,6 +55,8 @@ PYBIND11_PLUGIN(_qracksim) {
         .def("get_amplitude", &QrackSimulator::get_amplitude)
         .def("set_wavefunction", &QrackSimulator::set_wavefunction)
         .def("collapse_wavefunction", &QrackSimulator::collapse_wavefunction)
+        .def("prepare_state", &QrackSimulator::prepare_state)
+        .def("run", &QrackSimulator::run)
         .def("cheat", &QrackSimulator::cheat)
         ;
     return m.ptr();

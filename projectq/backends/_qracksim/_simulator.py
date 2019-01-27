@@ -23,15 +23,15 @@ import numpy as np
 from enum import IntEnum
 from projectq.cengines import BasicEngine
 from projectq.meta import get_control_count, LogicalQubitIDTag
-from projectq.ops import (Ph,
-                          R,
-                          BasicRotationGate,
-                          Swap,
+from projectq.ops import (Swap,
                           SqrtSwap,
                           Measure,
                           FlushGate,
                           Allocate,
-                          Deallocate)
+                          Deallocate,
+                          UniformlyControlledRy,
+                          UniformlyControlledRz,
+                          StatePreparation)
 from projectq.libs.math import (AddConstant,
                                 AddConstantModN,
                                 MultiplyByConstantModN,
@@ -102,14 +102,22 @@ class Simulator(BasicEngine):
             if (cmd.gate == Measure or
                     cmd.gate == Allocate or cmd.gate == Deallocate or
                     cmd.gate == Swap or cmd.gate == SqrtSwap or
-                    isinstance(cmd.gate, Ph) or
-                    isinstance(cmd.gate, AddConstant)):
+                    isinstance(cmd.gate, AddConstant) or
+                    isinstance(cmd.gate, UniformlyControlledRy) or
+                    isinstance(cmd.gate, UniformlyControlledRz)):
                 return True
             elif (isinstance(cmd.gate, AddConstantModN) and (1 << len(cmd.qubits)) == cmd.gate.N):
                 return True
             elif (isinstance(cmd.gate, MultiplyByConstantModN) and (1 << len(cmd.qubits)) == cmd.gate.N):
                 return True
             elif (isinstance(cmd.gate, DivideByConstantModN) and (1 << len(cmd.qubits)) == cmd.gate.N):
+                return True
+        except:
+            pass
+
+        try:
+            if (isinstance(cmd.gate, StatePreparation) and not cmd.control_qubits):
+                # Qrack has inexpensive ways of preparing a partial state, without controls.
                 return True
         except:
             pass
@@ -144,6 +152,14 @@ class Simulator(BasicEngine):
             return mapped_qureg
         else:
             return qureg
+
+    def get_expectation_value(self, qubit_operator, qureg):
+        # To maintain compatibility with default Simulator, for the moment.
+        pass
+
+    def apply_qubit_operator(self, qubit_operator, qureg):
+        # To maintain compatibility with default Simulator, for the moment.
+        pass
 
     def get_probability(self, bit_string, qureg):
         """
@@ -339,12 +355,8 @@ class Simulator(BasicEngine):
             ids1 = [qb.id for qb in cmd.qubits[0]]
             ids2 = [qb.id for qb in cmd.qubits[1]]
             self._simulator.apply_controlled_sqrtswap(ids1, ids2,
-                                                  [qb.id for qb in
-                                                   cmd.control_qubits])
-        elif isinstance(cmd.gate, Ph):
-            self._simulator.apply_controlled_phase_gate(cmd.gate.angle,
-                                                        [qb.id for qb in
-                                                         cmd.control_qubits])
+                                                      [qb.id for qb in
+                                                       cmd.control_qubits])
         elif isinstance(cmd.gate, AddConstant) or isinstance(cmd.gate, AddConstantModN):
             #Unless there's a carry, the only unitary addition is mod (2^len(ids))
             ids = [qb.id for qr in cmd.qubits for qb in qr]
@@ -372,6 +384,25 @@ class Simulator(BasicEngine):
                                                  [qb.id for qb in
                                                   cmd.control_qubits],
                                                  cmd.gate.a)
+        elif isinstance(cmd.gate, UniformlyControlledRy):
+            ids = [qb.id for qb in cmd.qubits[0]]
+            self._simulator.apply_uniformly_controlled_ry([angle for angle in
+                                                           cmd.gate.angles],
+                                                          ids,
+                                                          [qb.id for qb in
+                                                           cmd.control_qubits])
+        elif isinstance(cmd.gate, UniformlyControlledRz):
+            ids = [qb.id for qb in cmd.qubits[0]]
+            self._simulator.apply_uniformly_controlled_rz([angle for angle in
+                                                           cmd.gate.angles],
+                                                          ids,
+                                                          [qb.id for qb in
+                                                           cmd.control_qubits])
+        elif isinstance(cmd.gate, StatePreparation):
+            ids = [qb.id for qb in cmd.qubits[0]]
+            self._simulator.prepare_state(ids,
+                                          [amp for amp in
+                                           cmd.gate.final_state])
         elif len(cmd.gate.matrix) <= 2 ** 1:
             matrix = cmd.gate.matrix
             ids = [qb.id for qr in cmd.qubits for qb in qr]
@@ -404,5 +435,8 @@ class Simulator(BasicEngine):
         for cmd in command_list:
             if not cmd.gate == FlushGate():
                 self._handle(cmd)
+            else:
+                # flush gate - Qrack automatically flushes, but this guarantees that we've finihsed.
+                self._simulator.run()
             if not self.is_last_engine:
                 self.send([cmd])

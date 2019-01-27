@@ -35,11 +35,11 @@
 
 class QrackSimulator{
 public:
-    using calc_type = real1;
-    using complex_type = complex;
-    using StateVector = std::vector<complex_type, aligned_allocator<complex_type,64>>;
+    using calc_type = Qrack::real1;
+    using complex_type = Qrack::complex;
+    using StateVector = std::vector<std::complex<float>, aligned_allocator<std::complex<float>,64>>;
     using Map = std::map<unsigned, unsigned>;
-    using RndEngine = std::default_random_engine;
+    using RndEngine = qrack_rand_gen;
     enum Qrack::QInterfaceEngine QrackEngine = Qrack::QINTERFACE_QUNIT;
     enum Qrack::QInterfaceEngine QrackSubengine1 = Qrack::QINTERFACE_QFUSION;
 #if ENABLE_OPENCL
@@ -47,11 +47,12 @@ public:
 #else
     enum Qrack::QInterfaceEngine QrackSubengine2 = Qrack::QINTERFACE_CPU;
 #endif
-    typedef std::function<void(bitLenInt start, bitLenInt size, bitLenInt* ctrlArray, bitLenInt ctrlSize)> CINTFunc;
-    typedef std::function<void(bitLenInt start, bitLenInt carryStart, bitLenInt size, bitLenInt* ctrlArray, bitLenInt ctrlSize)> CMULXFunc;
+    typedef std::function<void(bitLenInt*, bitLenInt, bitLenInt, calc_type*)> UCRFunc;
+    typedef std::function<void(bitLenInt, bitLenInt, bitLenInt*, bitLenInt)> CINTFunc;
+    typedef std::function<void(bitLenInt, bitLenInt, bitLenInt, bitLenInt*, bitLenInt)> CMULXFunc;
 
     QrackSimulator(unsigned seed = 1, const int& dev = -1, const int& simulator_type = 1) {
-        rnd_eng_ = std::make_shared<std::default_random_engine>();
+        rnd_eng_ = std::make_shared<RndEngine>();
     	rnd_eng_->seed(seed);
 
 #if ENABLE_OPENCL
@@ -83,10 +84,10 @@ public:
         if (map_.count(id) == 0) {
             if (qReg == NULL) {
                 map_[id] = 0;
-                qReg = Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, 1, 0, rnd_eng_, complex(ONE_R1, ZERO_R1), true, false, true); 
+                qReg = Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, 1, 0, rnd_eng_, complex_type(ONE_R1, ZERO_R1), true, false, true); 
             } else {
                 map_[id] = qReg->GetQubitCount();
-                qReg->Compose(Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, 1, 0, rnd_eng_, complex(ONE_R1, ZERO_R1), true, false, true));
+                qReg->Compose(Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, 1, 0, rnd_eng_, complex_type(ONE_R1, ZERO_R1), true, false, true));
             }
         }
         else
@@ -111,19 +112,6 @@ public:
             // For example, 3 bits could be in the simulator. One bit could have a 100% chance being "true,"
             // split between 4 basis vectors including the other two bits, all at different phases.
             // Such a state for the 100% bit is still not necessarily separable, or "classical."
-            //
-            // Qrack::QUnit tries to track phase separability of bits:
-            //
-            // return qReg->IsPhaseSeparable((bitLenInt)map_[id]);
-            //
-            // However, the above method was intended for optimization purposes. It might err on the side of
-            // guessing that a bit's phase relationships might not separable, when they actually can be.
-            // It takes a maximal Schmidt decomposition to determine whether or not a bit is really separable.
-            // This can be computationally expensive, so Qrack makes an inexpensive guess, erring on the side
-            // of assuming too much irreducibility of any register state.
-            //
-            // As such, the above method might throw a false exception, but just checking probability can
-            // fail to recognize real irreducibility:
             return true;
         } else {
             return false;
@@ -141,6 +129,7 @@ public:
         for (i = 0; i < ids.size(); i++) {
             res[i] = !(!(allRes & (1U << bits[i])));
         }
+        delete[] bits;
     }
 
     std::vector<bool> measure_qubits_return(std::vector<unsigned> const& ids){
@@ -175,10 +164,17 @@ public:
     template <class M>
     void apply_controlled_gate(M const& m, std::vector<unsigned> ids,
                                std::vector<unsigned> ctrl){
-        complex mArray[4] = {
-            complex(real(m[0][0]), imag(m[0][0])), complex(real(m[0][1]), imag(m[0][1])),
-            complex(real(m[1][0]), imag(m[1][0])), complex(real(m[1][1]), imag(m[1][1]))
+        complex_type mArray[4] = {
+            complex_type(real(m[0][0]), imag(m[0][0])), complex_type(real(m[0][1]), imag(m[0][1])),
+            complex_type(real(m[1][0]), imag(m[1][0])), complex_type(real(m[1][1]), imag(m[1][1]))
         };
+
+        if (ctrl.size() == 0) {
+            for (bitLenInt i = 0; i < ids.size(); i++) {
+                qReg->ApplySingleBit(mArray, true, map_[ids[i]]);
+            }
+            return;
+        }
 
         bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
         for (bitLenInt i = 0; i < ctrl.size(); i++) {
@@ -198,6 +194,13 @@ public:
 
         assert(ids1.size() == ids2.size());
 
+        if (ctrl.size() == 0) {
+            for (bitLenInt i = 0; i < ids1.size(); i++) {
+                qReg->Swap(map_[ids1[i]], map_[ids2[i]]);
+            }
+            return;
+        }
+
         bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
         for (bitLenInt i = 0; i < ctrl.size(); i++) {
             ctrlArray[i] = map_[ctrl[i]];
@@ -216,6 +219,13 @@ public:
 
         assert(ids1.size() == ids2.size());
 
+        if (ctrl.size() == 0) {
+            for (bitLenInt i = 0; i < ids1.size(); i++) {
+                qReg->SqrtSwap(map_[ids1[i]], map_[ids2[i]]);
+            }
+            return;
+        }
+
         bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
         for (bitLenInt i = 0; i < ctrl.size(); i++) {
             ctrlArray[i] = map_[ctrl[i]];
@@ -228,14 +238,19 @@ public:
         delete[] ctrlArray;
     }
 
-    void apply_controlled_phase_gate(real1 angle, std::vector<unsigned> ctrl){
-        real1 cosine = cos(angle);
-        real1 sine = sin(angle);
+    void apply_controlled_phase_gate(float angle, std::vector<unsigned> ctrl){
+        calc_type cosine = cos(angle);
+        calc_type sine = sin(angle);
 
-        complex mArray[4] = {
-            complex(cosine, sine), complex(ZERO_R1, ZERO_R1),
-            complex(ZERO_R1, ZERO_R1), complex(cosine, sine)
+        complex_type mArray[4] = {
+            complex_type(cosine, sine), complex_type(ZERO_R1, ZERO_R1),
+            complex_type(ZERO_R1, ZERO_R1), complex_type(cosine, sine)
         };
+
+        if (ctrl.size() == 0) {
+            qReg->ApplySingleBit(mArray, true, 0);
+            return;
+        }
 
         bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
         for (bitLenInt i = 0; i < ctrl.size(); i++) {
@@ -250,6 +265,32 @@ public:
         qReg->ApplyControlledSingleBit(ctrlArray, ctrl.size(), target, mArray);
 
         delete[] ctrlArray;
+    }
+
+    void apply_uniformly_controlled_ry(std::vector<float> angles, std::vector<unsigned> ids, std::vector<unsigned> ctrl){
+        if (ctrl.size() == 0) {
+            for (bitLenInt i = 0; i < ids.size(); i++) {
+                qReg->RY(angles[0], map_[ids[i]]);
+            }
+            return;
+        }
+
+        apply_uniformly_controlled(angles, ids, ctrl, [&](bitLenInt* ctrlArray, bitLenInt controlLen, bitLenInt trgt, calc_type* anglesArray) {
+            qReg->UniformlyControlledRY(ctrlArray, controlLen, trgt, anglesArray);
+        });
+    }
+
+    void apply_uniformly_controlled_rz(std::vector<float> angles, std::vector<unsigned> ids, std::vector<unsigned> ctrl){
+        if (ctrl.size() == 0) {
+            for (bitLenInt i = 0; i < ids.size(); i++) {
+                qReg->RZ(angles[0], map_[ids[i]]);
+            }
+            return;
+        }
+
+        apply_uniformly_controlled(angles, ids, ctrl, [&](bitLenInt* ctrlArray, bitLenInt controlLen, bitLenInt trgt, calc_type* anglesArray) {
+            qReg->UniformlyControlledRZ(ctrlArray, controlLen, trgt, anglesArray);
+        });
     }
 
     void apply_controlled_inc(std::vector<unsigned> ids, std::vector<unsigned> ctrl, bitCapInt toAdd){
@@ -288,7 +329,7 @@ public:
         return qReg->ProbMask(mask, bit_str);
     }
 
-    complex_type get_amplitude(std::vector<bool> const& bit_string,
+    std::complex<float> get_amplitude(std::vector<bool> const& bit_string,
                                       std::vector<unsigned> const& ids){
         std::size_t chk = 0;
         std::size_t index = 0;
@@ -300,7 +341,8 @@ public:
         }
         if ((chk + 1U) != (std::size_t)(qReg->GetMaxQPower()))
             throw(std::runtime_error("The second argument to get_amplitude() must be a permutation of all allocated qubits. Please make sure you have called eng.flush()."));
-        return qReg->GetAmplitude(index);
+        complex_type result = qReg->GetAmplitude(index);
+        return std::complex<float>(real(result), imag(result));
     }
 
     void set_wavefunction(StateVector const& wavefunction, std::vector<unsigned> const& ordering){
@@ -314,12 +356,11 @@ public:
         for (unsigned i = 0; i < ordering.size(); i++)
             map_[ordering[i]] = i;
         
-        complex* wfArray = new complex[wavefunction.size()];
+        complex_type* wfArray = new complex_type[wavefunction.size()];
         #pragma omp parallel for schedule(static)
-        for (std::size_t i = 0; i < wavefunction.size(); i++)
-            wfArray[i] = complex(real(wavefunction[i]), imag(wavefunction[i]));
+        for (std::size_t j = 0; j < wavefunction.size(); j++)
+            wfArray[j] = complex_type(real(wavefunction[j]), imag(wavefunction[j]));
 
-        qReg = Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, ordering.size(), 0, rnd_eng_, complex(ONE_R1, ZERO_R1), true, false, true);
         qReg->SetQuantumState(wfArray);
 
         delete[] wfArray;
@@ -339,7 +380,7 @@ public:
             valuesArray[i] = values[i];
         }
         calc_type N = qReg->ProbMask(mask, val);
-        if (N < 1.e-12)
+        if (N < min_norm)
             throw(std::runtime_error("collapse_wavefunction(): Invalid collapse! Probability is ~0."));
 
         qReg->ForceM(idsArray, ids.size(), valuesArray);
@@ -348,23 +389,76 @@ public:
         delete[] valuesArray;
     }
 
+    void prepare_state(std::vector<unsigned> const& ids, std::vector<std::complex<float>> const& amps){
+        // We can prepare arbitrary substates with measurement, "Compose," and "Decompose.
+        assert((1U << ids.size()) == amps.size());
+
+        // We need the amplitudes as an array of Qrack::complex elements.
+        complex_type* substateVec = new complex_type[amps.size()];
+        for (bitCapInt j = 0; j < amps.size(); j++) {
+            substateVec[j] = complex_type(real(amps[j]), imag(amps[j]));
+        }
+
+        // If the substate being prepared is the full set, then set the amplitudes, and we're done.
+        if (ids.size() == qReg->GetQubitCount()) {
+            qReg->SetQuantumState(substateVec);
+            delete[] substateVec;
+            return;
+        }
+
+        // Otherwise, this is a subset less than the full set of qubits.
+
+        // First, collapse the old substate and throw it away.
+        bitLenInt mapped;
+        for (bitLenInt i = 0; i < ids.size(); i++) {
+            qReg->M(map_[ids[i]]);
+            mapped = map_[ids[i]];
+            qReg->Dispose(mapped, 1);
+            map_.erase(ids[i]);
+            for (Map::iterator it = map_.begin(); it != map_.end(); it++) {
+                if (it->second > mapped) {
+                    it->second--;
+                }
+            }
+        }
+
+        // Then, prepare the new substate.
+        Qrack::QInterfacePtr substate = Qrack::CreateQuantumInterface(QrackEngine, QrackSubengine1, QrackSubengine2, ids.size(), 0, rnd_eng_, complex_type(ONE_R1, ZERO_R1), true, false, true);
+        substate->SetQuantumState(substateVec);
+
+        // Finally, combine the representation of the new substate with the remainder of the old engine.
+        bitLenInt oldLength = qReg->Compose(substate);
+
+        for (bitLenInt i = 0; i < ids.size(); i++) {
+            map_[ids[i]] = oldLength + i;
+        }
+
+        delete[] substateVec;
+    }
+
     std::tuple<Map, StateVector> cheat(){
         if (qReg == NULL) {
-            StateVector vec(1, 0.);
+            StateVector vec(1, 0.0);
             return make_tuple(map_, std::move(vec));
         }
 
-        complex* wfArray = new complex[qReg->GetMaxQPower()];
+        complex_type* wfArray = new complex_type[qReg->GetMaxQPower()];
         qReg->GetQuantumState(wfArray);
         StateVector vec(qReg->GetMaxQPower());
 
         #pragma omp parallel for schedule(static)
         for (std::size_t i = 0; i < vec.size(); i++)
-            vec[i] = complex_type(real(wfArray[i]), imag(wfArray[i]));
+            vec[i] = std::complex<float>(real(wfArray[i]), imag(wfArray[i]));
 
         delete[] wfArray;
 
         return make_tuple(map_, std::move(vec));
+    }
+
+    void run(){
+        if (qReg != NULL) {
+            qReg->Finish();
+        }
     }
 
     ~QrackSimulator(){
@@ -385,6 +479,35 @@ private:
         return true;
     }
 
+    void apply_uniformly_controlled(std::vector<float> angles, std::vector<unsigned> ids, std::vector<unsigned> ctrl, UCRFunc fn){
+        bitLenInt i;
+
+        // Adjust for the convention difference between ProjectQ and Qrack:
+        calc_type* anglesArray = new calc_type[angles.size()];
+        for (i = 0; i < angles.size(); i++) {
+            anglesArray[i] = angles[i];
+        }
+
+        if (ctrl.size() > 0) {
+            bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
+            for (i = 0; i < ctrl.size(); i++) {
+                ctrlArray[i] = map_[ctrl[i]];
+            }
+
+            for (i = 0; i < ids.size(); i++) {
+                fn(ctrlArray, ctrl.size(), map_[ids[i]], anglesArray);
+            }
+
+            delete[] ctrlArray;
+        } else {
+            for (i = 0; i < ids.size(); i++) {
+                fn(NULL, 0, map_[ids[i]], anglesArray);
+            }
+        }
+
+        delete[] anglesArray;
+    }
+
     void apply_controlled_int(CINTFunc fn, std::vector<unsigned> ids, std::vector<unsigned> ctrl){
         bitLenInt i;
         Map invMap;
@@ -401,14 +524,18 @@ private:
             std::swap(invMap[i], invMap[tempMap]);
         }
 
-        bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
-        for (i = 0; i < ctrl.size(); i++) {
-            ctrlArray[i] = map_[ctrl[i]];
+        if (ctrl.size() > 0) {
+            bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
+            for (i = 0; i < ctrl.size(); i++) {
+                ctrlArray[i] = map_[ctrl[i]];
+            }
+
+            fn(0, (bitLenInt)ids.size(), ctrlArray, (bitLenInt)ctrl.size());
+
+            delete[] ctrlArray;
+        } else {
+            fn(0, (bitLenInt)ids.size(), NULL, 0);
         }
-
-        fn(0, (bitLenInt)ids.size(), ctrlArray, (bitLenInt)ctrl.size());
-
-        delete[] ctrlArray;
     }
 
     void apply_controlled_mulx(CMULXFunc fn, std::vector<unsigned> ids, std::vector<unsigned> ctrl){
@@ -429,14 +556,18 @@ private:
             std::swap(invMap[i], invMap[tempMap]);
         }
 
-        bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
-        for (i = 0; i < ctrl.size(); i++) {
-            ctrlArray[i] = map_[ctrl[i]];
+        if (ctrl.size() > 0) {
+            bitLenInt* ctrlArray = new bitLenInt[ctrl.size()];
+            for (i = 0; i < ctrl.size(); i++) {
+                ctrlArray[i] = map_[ctrl[i]];
+            }
+
+            fn(0, (bitLenInt)(ids.size() / 2), (bitLenInt)(ids.size() / 2), ctrlArray, (bitLenInt)ctrl.size());
+
+            delete[] ctrlArray;
+        } else {
+            fn(0, (bitLenInt)(ids.size() / 2), (bitLenInt)(ids.size() / 2), NULL, 0);
         }
-
-        fn(0, (bitLenInt)(ids.size() / 2), (bitLenInt)(ids.size() / 2), ctrlArray, (bitLenInt)ctrl.size());
-
-        delete[] ctrlArray;
     }
 
     Map map_;
